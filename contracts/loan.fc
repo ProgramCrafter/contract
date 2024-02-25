@@ -7,7 +7,9 @@ global int round_since;
 
 ;; TODO: move to utils
 int __asm_maybe_preload_u64(slice) asm "64 PLDUZ";
-int disallow_bounce?(int x) inline { return (x & 2) == 0; }
+int disallow_bounce?(int x) inline {
+    return (x & 2) == 0;
+} ;; it would be nice to use IFBITJMP, but that's not easy to debug
 
 () save_data(builder current_elector) impure inline {
     begin_cell()
@@ -73,9 +75,11 @@ int disallow_bounce?(int x) inline { return (x & 2) == 0; }
 }
 
 int src_is_elector?(slice src) inline {
-    builder current_elector = create_address(get_elector());
-
-    return equal_slice_bits(src, elector) | equal_slice_bits(src, current_elector.end_cell().begin_parse());
+    if equal_slice_bits(src, elector) { return -1; }
+    
+    (int cur_elector_wc, int cur_elector_hash) = get_elector();
+    (int src_wc, int src_hash) = src.parse_std_addr();
+    return (src_hash == cur_elector_hash) & (src_wc == cur_elector_wc);
 }
 
 () on_bounce(slice src, slice s) impure inline {
@@ -130,7 +134,7 @@ int src_is_elector?(slice src) inline {
     }
 
     if src_is_elector?(src) {
-        return (); ;; accept coins from the elector
+        return ();    ;; accept coins from the elector
     }
 
     throw(err::invalid_op);
