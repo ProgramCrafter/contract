@@ -5,6 +5,10 @@ global slice treasury;
 global slice validator;
 global int round_since;
 
+;; TODO: move to utils
+int __asm_maybe_preload_u64(slice) asm "64 PLDUZ";
+int disallow_bounce?(int x) inline { return (x & 2) == 0; }
+
 () save_data(builder current_elector) impure inline {
     begin_cell()
         .store_builder(current_elector)
@@ -43,27 +47,20 @@ global int round_since;
 }
 
 () proxy_recover_stake(slice src, slice s) impure inline {
-    int query_id = s~load_uint(64);
-    s.end_parse();
-
+    throw_unless(err::invalid_parameters, (s.slice_bits() != 64) | s.slice_refs());
     throw_unless(err::access_denied, equal_slice_bits(src, treasury));
 
     builder recover = begin_cell()
         .store_uint(op::recover_stake, 32)
-        .store_uint(query_id, 64);
+        .store_slice(s);    ;; query_id
     send_msg(true, elector.to_builder(), null(), recover, 0, send::unreserved_balance);
 }
 
 () recover_stake_handler(slice src, int op, slice s) impure inline_ref {
-    int query_id = 0;
-    if s.slice_bits() >= 64 { ;; in case the elector's behavior changed, don't throw
-        query_id = s~load_uint(64);
-    }
-
-    int ok? = op == op::recover_stake_ok;
-
     throw_unless(err::access_denied, equal_slice_bits(src, elector));
-
+    
+    int query_id = s.__asm_maybe_preload_u64();
+    int ok? = op == op::recover_stake_ok;
     accept_message();
 
     builder result = begin_cell()
@@ -102,37 +99,34 @@ int src_is_elector?(slice src) inline {
         return on_bounce(src, s);
     }
 
-    int op = 0;
-    if s.slice_bits() {
-        op = s~load_uint(32);
+    ifnot s.slice_bits() {
+        ;; we received message without opcode and thus without comment
+        ;; if it is unbounceable, we can skip throwing an error
+        ;; elector should not send messages without opcode, but we still check to not lose on money
+        if src_is_elector?(src) | disallow_bounce?(flags) {
+            return ();
+        }
+        throw(err::invalid_op);
     }
+    
+    int op = s~load_uint(32);
 
     if op == op::proxy_new_stake {
         return proxy_new_stake(src, s);
-    }
-
-    if op == op::new_stake_error {
-        return recover_stake_handler(src, op, s);
-    }
-
-    if op == op::new_stake_ok {
-        return (); ;; elector returns 1 TON when query_id > 0, do nothing
     }
 
     if op == op::proxy_recover_stake {
         return proxy_recover_stake(src, s);
     }
 
-    if op == op::recover_stake_error {
+    if (op == op::new_stake_error) | (op == op::recover_stake_error) | (op == op::recover_stake_ok) {
         return recover_stake_handler(src, op, s);
     }
 
-    if op == op::recover_stake_ok {
-        return recover_stake_handler(src, op, s);
-    }
-
-    if op == op::top_up {
-        return (); ;; top up TON balance, do nothing
+    if (op == op::new_stake_ok) |    ;; elector returns 1 TON when query_id > 0, do nothing
+       (op == op::top_up)            ;; topping up TON balance, no matter it will get either to elector or treasury
+    {
+        return ();
     }
 
     if src_is_elector?(src) {
